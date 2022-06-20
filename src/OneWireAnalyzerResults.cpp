@@ -51,103 +51,28 @@ void OneWireAnalyzerResults::GenerateBubbleText( U64 frame_index, Channel& /*cha
 			}
 		}
 		break;
-	case PresencePulse:
+	case Byte:
 		{
-			AddResultString( "P" );
-			AddResultString( "PRESENCE" );
-			AddResultString( "PRESENCE condition" );
-		}
-		break;
-	case ReadRomFrame:
-		{
-			AddResultString( "READ" );
-			AddResultString( "READ ROM COMMAND" );
-			AddResultString( "READ ROM command: [", number_str, "]" );
-		}
-		break;
-	case SkipRomFrame:
-		{
-			AddResultString( "SKIP" );
-			AddResultString( "SKIP ROM COMMAND" );
-			AddResultString( "SKIP ROM command: [", number_str, "]" );
-		}
-		break;
-	case SearchRomFrame:
-		{
-			AddResultString( "SEARCH" );
-			AddResultString( "SEARCH ROM COMMAND" );
-			AddResultString( "SEARCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case AlarmSearchFrame:
-		{
-			AddResultString( "ALARM" );
-			AddResultString( "ALARM SEARCH ROM COMMAND" );
-			AddResultString( "ALARM SEARCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case MatchRomFrame:
-		{
-			AddResultString( "MATCH" );
-			AddResultString( "MATCH ROM COMMAND" );
-			AddResultString( "MATCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case OverdriveSkipRomFrame:
-		{
-			AddResultString( "OD SKIP" );
-			AddResultString( "OVERDRIVE SKIP ROM" );
-			AddResultString( "OVERDRIVE SKIP ROM command: [", number_str, "]" );
-		}
-		break;
-	case OverdriveMatchRomFrame:
-		{
-			AddResultString( "OD MATCH" );
-			AddResultString( "OVERDRIVE MATCH COMMAND" );
-			AddResultString( "OVERDRIVE MATCH ROM command: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 8, number_str, 128 );
+			AddResultString( number_str );
 		}
 		break;
 	case CRC:
 		{
-			AddResultString( "CRC" );
-			AddResultString( "CRC: [", number_str, "]" );
-			AddResultString( "CRC section from ROM: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 8, number_str, 128 );
+			AddResultString( " CRC=", number_str );
 		}
 		break;
-	case FamilyCode:
+	case Command:
 		{
-			AddResultString( "FAMILY" );
-			AddResultString( "FAMILY: [", number_str, "]" );
-			AddResultString( "FAMILY CODE section from ROM: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 46, number_str, 128 );
+			AddResultString(" ", number_str );
 		}
 		break;
-	case Rom:
+	case Data:
 		{
-			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 48, number_str, 128 );
-			AddResultString( "ROM" );
-			AddResultString( "ROM: [", number_str, "]" );
-			AddResultString( "ROM CODE section from ROM: [", number_str, "]" );
-		}
-		break;
-	case Byte:
-		{
-			AddResultString( "D" );
-			AddResultString( "DATA" );
-			AddResultString( "DATA: [", number_str, "]" );
-		}
-		break;
-	case Bit:
-		{
-			AddResultString( "Z" );
-			AddResultString( "BIT" );
-			AddResultString( "BIT - ERROR." );
-		}
-		break;
-	case InvalidRomCommandFrame:
-		{
-			AddResultString( "COMMAND!" );
-			AddResultString( "INVALID ROM COMMAND" );
-			AddResultString( "Invalid ROM command: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 16, number_str, 128 );
+			AddResultString( " Data=", number_str );
 		}
 		break;
 	}
@@ -181,12 +106,12 @@ void OneWireAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 		else
 			packet_id_str[0] = 0;
 
-		ss << packet_id_str << ",";
+		//ss << packet_id_str << ",";
 
 		char time_str[128];
 		AnalyzerHelpers::GetTimeString( frame.mStartingSampleInclusive, trigger_sample, sample_rate, time_str, 128 );
 
-		ss << time_str << ",";
+		//ss << time_str << ",";
 		//RestartPulse, PresencePulse, ReadRomFrame, SkipRomFrame, SearchRomFrame,  AlarmSearchFrame, MatchRomFrame, OverdriveSkipRomFrame, OverdriveMatchRomFrame, CRC, FamilyCode, Rom, Byte, Bit
 		char number_str[128];
 		AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 8, number_str, 128);
@@ -240,23 +165,24 @@ void OneWireAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 				ss << "Overdrive Match Rom Command" << ", " << number_str;
 			}
 			break;
-		case CRC:
-			{	
-				ss << "ROM CRC" << ", " << number_str;
-			}
-			break;
-		case FamilyCode:
-			{
-				ss << "ROM Family Code" << ", " << number_str;
-			}
-			break;
-		case Rom:
-			{
-				AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 48, number_str, 128 );
-				ss << "ROM Code" << ", " << number_str;
-
-			}
-			break;
+	case CRC:
+		{
+			AnalyzerHelpers::GetNumberString( frame.mData1, Hexadecimal, 8, number_str, 128 );
+			ss << " CRC= " << number_str << "\n";
+		}
+		break;
+	case Command:
+		{
+			AnalyzerHelpers::GetNumberString( frame.mData1, ASCII, 46, number_str, 128 );
+			ss << number_str << " ";
+		}
+		break;
+	case Data:
+		{
+			AnalyzerHelpers::GetNumberString( frame.mData1, Decimal, 16, number_str, 128 );
+			ss << "Data= " << number_str << " ";
+		}
+		break;
 		case Byte:
 			{
 				ss << "Data" << ", " << number_str;
@@ -273,7 +199,7 @@ void OneWireAnalyzerResults::GenerateExportFile( const char* file, DisplayBase d
 			break;
 		}
 
-		ss << std::endl;
+		//ss << std::endl;
 
 		AnalyzerHelpers::AppendToFile( (U8*)ss.str().c_str(), ss.str().length(), f );
 		ss.str( std::string() );
@@ -317,75 +243,28 @@ void OneWireAnalyzerResults::GenerateFrameTabularText( U64 frame_index, DisplayB
 			}
 		}
 		break;
-	case PresencePulse:
+
+	case Byte:
 		{
-			AddTabularText( "PRESENCE condition" );
-		}
-		break;
-	case ReadRomFrame:
-		{
-			AddTabularText( "READ ROM command: [", number_str, "]" );
-		}
-		break;
-	case SkipRomFrame:
-		{
-			AddTabularText( "SKIP ROM command: [", number_str, "]" );
-		}
-		break;
-	case SearchRomFrame:
-		{
-			AddTabularText( "SEARCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case AlarmSearchFrame:
-		{
-			AddTabularText( "ALARM SEARCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case MatchRomFrame:
-		{
-			AddTabularText( "MATCH ROM command: [", number_str, "]" );
-		}
-		break;
-	case OverdriveSkipRomFrame:
-		{
-			AddTabularText( "OVERDRIVE SKIP ROM command: [", number_str, "]" );
-		}
-		break;
-	case OverdriveMatchRomFrame:
-		{
-			AddTabularText( "OVERDRIVE MATCH ROM command: [", number_str, "]" );
+			AddTabularText( number_str );
 		}
 		break;
 	case CRC:
 		{
-			AddTabularText( "CRC section from ROM: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, Hexadecimal, 8, number_str, 128 );
+			AddTabularText( " CRC=", number_str  ,"\n");
 		}
 		break;
-	case FamilyCode:
+	case Command:
 		{
-			AddTabularText( "FAMILY CODE section from ROM: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, ASCII, 46, number_str, 128 );
+			AddTabularText(" ", number_str );
 		}
 		break;
-	case Rom:
+	case Data:
 		{
-			AnalyzerHelpers::GetNumberString( frame.mData1, display_base, 48, number_str, 128 );
-			AddTabularText( "ROM CODE section from ROM: [", number_str, "]" );
-		}
-		break;
-	case Byte:
-		{
-			AddTabularText( "DATA: [", number_str, "]" );
-		}
-		break;
-	case Bit:
-		{
-			AddTabularText( "BIT - ERROR." );
-		}
-		break;
-	case InvalidRomCommandFrame:
-		{
-			AddTabularText( "Invalid ROM command: [", number_str, "]" );
+			AnalyzerHelpers::GetNumberString( frame.mData1, Decimal, 16, number_str, 128 );
+			AddTabularText( " Data=", number_str);
 		}
 		break;
 	}

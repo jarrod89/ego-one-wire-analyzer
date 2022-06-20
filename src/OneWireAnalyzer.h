@@ -16,12 +16,12 @@
 
 class OneWireAnalyzerSettings;
 
-enum OneWireFrameType { RestartPulse, PresencePulse, ReadRomFrame, SkipRomFrame, SearchRomFrame, MatchRomFrame, OverdriveSkipRomFrame, OverdriveMatchRomFrame, CRC, FamilyCode, Rom, Byte, Bit, InvalidRomCommandFrame, AlarmSearchFrame };
-enum OneWireState { UnknownState, ResetDetectedState, PresenceDetectedState, RomCommandDetectedState, RomFinishedState };
+enum OneWireFrameType { RestartPulse, PresencePulse, ReadRomFrame, SkipRomFrame, SearchRomFrame, MatchRomFrame, OverdriveSkipRomFrame, OverdriveMatchRomFrame, Data, Command, CRC, FamilyCode, Rom, Byte, Bit, InvalidRomCommandFrame, AlarmSearchFrame };
+enum OneWireState { UnknownState, ResetDetectedState, NewPacketState, Decode};
 enum OneWireRomCommand { ReadRom, SkipRom, SearchRom, MatchRom, OverdriveSkipRom, OverdriveMatchRom, AlarmSearch };
 
 //http://www.maxim-ic.com/products/ibutton/ibuttons/standard.pdf
-const U64 SPEC_RESET_PULSE = 480;
+const U64 SPEC_RESET_PULSE = 1000;
 const U64 SPEC_OVD_RESET_PULSE = 48;
 
 const U64 SPEC_MAX_OVD_RESET_PULSE = 80;
@@ -30,9 +30,9 @@ const U64 MARGIN_INSIDE_RESET_PULSE = 80;
 const U64 MARGIN_INSIDE_OVD_RESET_PULSE = 8;
 const U64 MARGIN_OUTSIDE_OVD_RESET_PULSE = 8;
 
-const U64 SPEC_MIN_PRESENCE_PULSE = 60;
+const U64 SPEC_MIN_PRESENCE_PULSE = 300;
 const U64 SPEC_MIN_OVD_PRESENCE_PULSE = 8;
-const U64 SPEC_MAX_PRESENCE_PULSE = 240;
+const U64 SPEC_MAX_PRESENCE_PULSE = 800;
 const U64 SPEC_MAX_OVD_PRESENCE_PULSE = 24;
 
 const U64 MARGIN_INSIDE_PRESENCE_PULSE = 10;
@@ -42,7 +42,8 @@ const U64 MARGIN_OUTSIDE_OVD_PRESENCE_PULSE = 1;
 
 
 
-const U64 SPEC_SAMPLE_POINT = 19;
+const U64 SPEC_SAMPLE_CHECK_POINT = 100; //checks if it's a valid '0'
+const U64 SPEC_SAMPLE_POINT = 300;
 const U64 SPEC_OVD_SAMPLE_POINT = 3;
 
 
@@ -79,6 +80,7 @@ protected:
 	//decoding variables and functions.
 	bool mOverdrive;						//1-Wire in Overdrive mode. approx speed increase.
 	OneWireState mCurrentState;				//Current state comunication is in: Reset/Romcommand/Rom data (for Match, Skip and Read)/Transfers
+	OneWireFrameType mCurrentFrame;
 	OneWireRomCommand mCurrentRomCommand;	//stores which rom command was issued.
 	U32 mRomBitsRecieved;					//count of ROM bits recieved after a rom command.
 	U64 mRomDetected;						//actual rom of device detected.

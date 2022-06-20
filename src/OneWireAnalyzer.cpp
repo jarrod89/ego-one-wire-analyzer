@@ -119,14 +119,15 @@ void OneWireAnalyzer::WorkerThread()
 				}
 			} 
 			
+
 			mOneWire->AdvanceToNextEdge();
 			
-			//if( one_wire.GetBitState() != BIT_LOW )
-			//	one_wire.MoveRightUntilBitChanges( true, true );
-
 			//this happens every time a zero is recorded.
 			if( mOneWire->GetBitState() != BIT_LOW )
+			{
+				mRisingEdgeSample = mOneWire->GetSampleNumber();
 				mOneWire->AdvanceToNextEdge();
+			}
 
 			mFallingEdgeSample = mOneWire->GetSampleNumber();//one_wire.GetSampleNumber();
 
@@ -141,22 +142,48 @@ void OneWireAnalyzer::WorkerThread()
 		
 			mLowPulseTime = SamplesToUs( mLowPulseLength ); //micro seconds
 			mHighPulseTime = SamplesToUs( mHighPulseLength );
+			if (mHighPulseLength > UsToSamples( 1000 ))
+			{
+				mCurrentState = NewPacketState;
+				
+				//RecordFrame(mFallingEdgeSample, mFallingEdgeSample + mHighPulseLength, RestartPulse, 0, true );
+			}
 
-			U64 min_low_pulse_samples = UsToSamples( 1 );
-			min_low_pulse_samples /= 2; //customer had data where the min pulse was about 0.8us.
-			if( ( force_overdrive || mOverdrive ) && (mSampleRateHz <= 1000000 ) )
-				min_low_pulse_samples = 0;
+			U64 min_high_pulse_samples = UsToSamples( 10 );
+			U64 min_low_pulse_samples = UsToSamples( 10 );
+			while(mHighPulseLength < min_high_pulse_samples)
+			{
+				mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::X, mSettings->mOneWireChannel );
+				mOneWire->AdvanceToNextEdge();
+				mOneWire->AdvanceToNextEdge();
+				mFallingEdgeSample = mOneWire->GetSampleNumber();
+				mHighPulseLength = mFallingEdgeSample - mRisingEdgeSample;
+				mHighPulseTime = SamplesToUs( mHighPulseLength );
+				mRisingEdgeSample = mOneWire->GetSampleOfNextEdge();
 
-			while( mLowPulseLength < min_low_pulse_samples )
+				mLowPulseLength = mRisingEdgeSample - mFallingEdgeSample;
+				mLowPulseTime = SamplesToUs( mLowPulseLength ); //micro seconds
+				//continue;
+			}
+
+			while( (mLowPulseLength < min_low_pulse_samples) )
 			{
 				mOneWire->AdvanceToNextEdge();
+				mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::X, mSettings->mOneWireChannel );
 				mOneWire->AdvanceToNextEdge(); //next neg edge.
 				mFallingEdgeSample = mOneWire->GetSampleNumber();//one_wire.GetSampleNumber();
 				mRisingEdgeSample = mOneWire->GetSampleOfNextEdge();
 				mLowPulseLength = mRisingEdgeSample - mFallingEdgeSample;
 				mLowPulseTime = SamplesToUs( mLowPulseLength ); //micro seconds
 			}
-			
+			if (mCurrentState == NewPacketState)
+			{
+				mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::Start, mSettings->mOneWireChannel );
+			}
+			else
+			{
+				mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::DownArrow, mSettings->mOneWireChannel );
+			}
 
 			//At this point, we should be sitting on a negative edge, and have the pulse length of the low pulse in front, and the high pulse behind.
 		}
@@ -207,474 +234,107 @@ void OneWireAnalyzer::WorkerThread()
 				mDataDetected = 0;
 				mDataBitsRecieved = 0;
 
-				mCurrentState = ResetDetectedState;
+				mCurrentState = Decode; 
+				mCurrentFrame = Data;
+				continue;
+			}
+			else if (mCurrentState == NewPacketState)
+			{
+				mResults->CommitPacketAndStartNewPacket();
+				mDataBitsRecieved = 0;
+				mCurrentState = Decode; 
+				mCurrentFrame = Data;
 				continue;
 			}
 		}
 
-		switch ( mCurrentState )
+		// start decoding data!
+		if ( mCurrentState == Decode)
 		{
-		case UnknownState:
+			if( mDataBitsRecieved == 0 )
 			{
-				//Do nothing.
+				mDataDetected = 0;
+				//Tag start of Family Code.
+				mByteStartSample = mFallingEdgeSample;
 			}
-			break;
-		case ResetDetectedState:
+			
+			U64 sample_location_offset = UsToSamples(SPEC_SAMPLE_CHECK_POINT);
+			mOneWire->Advance( U32( sample_location_offset ) );
+			
+			if( mOneWire->GetBitState() == BIT_HIGH )
 			{
-				//Test to see if er have a reset pulse.
-				U64 minimum_pulse_width = UsToSamples( SPEC_MIN_PRESENCE_PULSE - MARGIN_INSIDE_PRESENCE_PULSE );
-				
-				if( force_overdrive || mOverdrive )
-				{
-					minimum_pulse_width = UsToSamples( SPEC_MIN_OVD_PRESENCE_PULSE - MARGIN_INSIDE_OVD_PRESENCE_PULSE );
-				}
-				if ( mLowPulseLength > minimum_pulse_width )
-				{
-					//Presence Pulse Detected.
-					//TODO:   RecordBubble( one_wire_bubbles, mFallingEdgeSample, mRisingEdgeSample, PresencePulse );
-					RecordFrame( mFallingEdgeSample, mRisingEdgeSample, PresencePulse );
-
-					mCurrentState = PresenceDetectedState;
-				}
+				//invalid pulse
+				mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::X, mSettings->mOneWireChannel );
 			}
-			break;
-		case PresenceDetectedState:
+			else
 			{
-				//anticipating Rom Command.
-				if( mDataBitsRecieved == 0 )
-					mByteStartSample = mFallingEdgeSample;
-				/*
-				U64 minimum_pulse_width_zero = UsToSamples( SPEC_MIN_ZERO_PULSE - MARGIN_INSIDE_ZERO_PULSE ); //60us spec
-				U64 maximum_pulse_width_one = UsToSamples( SPEC_MAX_ONE_PULSE + MARGIN_OUTSIDE_ONE_PULSE ); //15us spec
-				if( mOverdrive == true )
-				{
-					minimum_pulse_width_zero = UsToSamples( SPEC_OVD_MIN_ZERO_PULSE - MARGIN_INSIDE_OVD_ZERO_PULSE ); //6us spec
-					maximum_pulse_width_one = UsToSamples( SPEC_MAX_OVD_ONE_PULSE + MARGIN_OUTSIDE_OVD_ONE_PULSE ); //2us spec
-				}
-				if ( mLowPulseLength > minimum_pulse_width_zero )
-				{
-					//store a zero into the data.
-				}
-				else if( mLowPulseLength <= maximum_pulse_width_one )
-				{
-					//store a one into the data.
-					if( ( mOverdrive == true ) || ( mLowPulseLength > 1 ) )
-						mDataDetected |= U64(0x1) << mDataBitsRecieved;
-				}
-				else
-				{
-					mCurrentState = UnknownState;
-					//Something Broke.
-				}
-				*/
-				U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-				if( force_overdrive || mOverdrive )
-					sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
+				U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT-SPEC_SAMPLE_CHECK_POINT );
 				mOneWire->Advance( U32( sample_location_offset ) );
 				
 				if( mOneWire->GetBitState() == BIT_HIGH )
 				{
 					//short pulse, this is a 1
 					mDataDetected |= U64(0x1) << mDataBitsRecieved;
+					mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::One, mSettings->mOneWireChannel );
 				}
 				else
 				{
 					//long pulse, this is a 0
+					mResults->AddMarker( mOneWire->GetSampleNumber(), AnalyzerResults::Zero, mSettings->mOneWireChannel );
 				}
-				//if( ( mOverdrive == true ) || ( mLowPulseLength > 1 ) )
 				mDataBitsRecieved += 1;
 
-				if( mDataBitsRecieved == 8 )
+				switch ( mCurrentFrame )
 				{
-					//all 8 bits of rom command collected.
-					//add bubble for all 8 bits.
-					//ReadRom, SkipRom, SearchRom, MatchRom, OverdriveSkipRom, OverdriveMatchRom, AlarmSearchRom
-					OneWireFrameType frame_type;
-
-					if( ( mDataDetected == 0x33 ) || ( mDataDetected == 0x0F ) )
-					{
-						mCurrentRomCommand = ReadRom;
-						frame_type = ReadRomFrame;
-					}
-					else if( mDataDetected == 0xCC )
-					{
-						mCurrentRomCommand = SkipRom;
-						frame_type = SkipRomFrame;
-					}
-					else if( mDataDetected == 0x55 )
-					{
-						mCurrentRomCommand = MatchRom;
-						frame_type = MatchRomFrame;
-					}
-					else if( mDataDetected == 0xF0 )
-					{
-						mCurrentRomCommand = SearchRom;
-						frame_type = SearchRomFrame;
-					}
-					else if( mDataDetected == 0x3C )
-					{
-						mCurrentRomCommand = OverdriveSkipRom;
-						frame_type = OverdriveSkipRomFrame;
-					}
-					else if( mDataDetected == 0x69 )
-					{
-						mCurrentRomCommand = OverdriveMatchRom;
-						frame_type = OverdriveMatchRomFrame;
-					}
-					else if( mDataDetected == 0xEC )
-					{
-						mCurrentRomCommand = AlarmSearch;
-						frame_type = AlarmSearchFrame;
-					}
-					else
-					{
-						frame_type = InvalidRomCommandFrame;
-						mCurrentState = RomFinishedState;
-					}
-
-					if(mCurrentState != RomFinishedState)
-						mCurrentState = RomCommandDetectedState;
-
-
-					//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, RomCommand, mCurrentRomCommand, mDataDetected );
-					RecordFrame( mByteStartSample, mRisingEdgeSample, frame_type, mDataDetected );
-	
-
-					mDataBitsRecieved = 0;
-					mDataDetected = 0;		
+					case UnknownState:
+						{
+							//Do nothing.
+						}
+						break;
 					
-					continue;
+					/*case Data:
+					{
+						if( mDataBitsRecieved == 8 )
+						{
+							RecordFrame( mByteStartSample, mRisingEdgeSample, Byte, mDataDetected );
+							mDataBitsRecieved = 0;
+							mCurrentFrame = Data;
+						}
+						break;
+					}*/
+					case Data:
+					{
+						if( mDataBitsRecieved == 16 )
+						{
+							RecordFrame( mByteStartSample, mRisingEdgeSample, Data, mDataDetected );
+							mDataBitsRecieved = 0;
+							mCurrentFrame = Command;
+						}
+						break;
+					}
+					case Command:
+					{
+						if( mDataBitsRecieved == 48 )
+						{
+							RecordFrame( mByteStartSample, mRisingEdgeSample, Command, mDataDetected );
+							mDataBitsRecieved = 0;
+							mCurrentFrame = CRC;
+						}
+						break;
+					}
+					case CRC:
+					{
+						if( mDataBitsRecieved == 8 )
+						{
+							RecordFrame( mByteStartSample, mRisingEdgeSample, CRC, mDataDetected );
+							mDataBitsRecieved = 0;
+						}
+						break;
+					}
 				}
-
 			}
-			break;
-		case RomCommandDetectedState:
-			{
-				//ReadRom, SkipRom, SearchRom, MatchRom, OverdriveSkipRom, OverdriveMatchRom, AlarmSearchRom
-				switch( mCurrentRomCommand )
-				{
-				case ReadRom:
-					{
-						//expecting 64 bits of rom address, nothing more.
-						//mRomDetected
-						if( mRomBitsRecieved == 8 )
-						{
-							//Bubble the ROM Family Code.
-							//TODO: RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 56 )
-						{
-							//Bubble the ROM Data bits.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 0 )
-						{
-							//Tag start of Family Code.
-							mByteStartSample = mFallingEdgeSample;
-						}
-
-						U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-						if( force_overdrive || mOverdrive )
-							sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
-						mOneWire->Advance( U32( sample_location_offset ) );
-						
-						if( mOneWire->GetBitState() == BIT_HIGH )
-						{
-							//short pulse, this is a 1
-							mRomDetected |= U64(0x1) << mRomBitsRecieved;
-						}
-						else
-						{
-							//long pulse, this is a 0
-						}
-
-						mRomBitsRecieved += 1;
-
-						if( mRomBitsRecieved == 8 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, FamilyCode, mRomDetected );
-
-
-						if( mRomBitsRecieved == 56 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-
-						if( mRomBitsRecieved == 64 )
-						{
-							//Bubble the ROM CRC.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							RecordFrame( mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							//Move to the next state
-							mCurrentState = RomFinishedState;
-
-						}
-					}
-					break;
-				case SkipRom:
-					{
-						mCurrentState = RomFinishedState;
-						//we cannot through away our current transision!
-						mBlockPulseAdvance = true;
-					}
-					break;
-				case SearchRom:
-					{
-						//expecting 192 bits of crap :( perhaps we should filter out only the ROM select bits?
-						//mRomDetected
-						if( mRomBitsRecieved == 24 )
-						{
-							//Bubble the ROM Family Code.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 168 )
-						{
-							//Bubble the ROM Data bits.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 0 )
-						{
-							//Tag start of Family Code.
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( ((mRomBitsRecieved + 1) % 3) == 0 )
-						{
-							/*
-							U64 minimum_pulse_width_zero = UsToSamples( SPEC_MIN_ZERO_PULSE - MARGIN_INSIDE_ZERO_PULSE ); //60us spec
-							U64 maximum_pulse_width_one = UsToSamples( SPEC_MAX_ONE_PULSE + MARGIN_OUTSIDE_ONE_PULSE ); //15us spec
-							if( mOverdrive == true )
-							{
-								minimum_pulse_width_zero = UsToSamples( SPEC_OVD_MIN_ZERO_PULSE - MARGIN_INSIDE_OVD_ZERO_PULSE ); //6us spec
-								maximum_pulse_width_one = UsToSamples( SPEC_MAX_OVD_ONE_PULSE + MARGIN_OUTSIDE_OVD_ONE_PULSE ); //2us spec
-							}
-							if ( mLowPulseLength > minimum_pulse_width_zero )
-							{
-								//store a zero into the data.
-							}
-							else if( mLowPulseLength <= maximum_pulse_width_one )
-							{
-								//store a one into the data.
-								mRomDetected |= U64(0x1) << ((mRomBitsRecieved - 2) / 3);
-							}
-							else
-							{
-								mCurrentState = UnknownState;
-								//Something Broke.
-							}
-							*/
-							U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-							if( force_overdrive || mOverdrive )
-								sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
-							mOneWire->Advance( U32( sample_location_offset ) );
-							
-							if( mOneWire->GetBitState() == BIT_HIGH )
-							{
-								//short pulse, this is a 1
-								mRomDetected |= U64(0x1) << ((mRomBitsRecieved - 2) / 3);
-							}
-							else
-							{
-								//long pulse, this is a 0
-							}
-						}
-						mRomBitsRecieved += 1;
-
-
-						if( mRomBitsRecieved == 24 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, FamilyCode, mRomDetected );
-
-						if( mRomBitsRecieved == 168 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-
-						if( mRomBitsRecieved == 192 )
-						{
-							//Bubble the ROM CRC.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							RecordFrame( mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							//Move to the next state
-							mCurrentState = RomFinishedState;
-						}
-					}
-					break;
-				case AlarmSearch:
-					{
-						//expecting 192 bits of crap :( perhaps we should filter out only the ROM select bits?
-						//mRomDetected
-						if( mRomBitsRecieved == 24 )
-						{
-							//Bubble the ROM Family Code.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 168 )
-						{
-							//Bubble the ROM Data bits.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 0 )
-						{
-							//Tag start of Family Code.
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( ( ( mRomBitsRecieved + 1 ) % 3 ) == 0 )
-						{
-							U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-							if( force_overdrive || mOverdrive )
-								sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
-							mOneWire->Advance( U32( sample_location_offset ) );
-
-							if( mOneWire->GetBitState() == BIT_HIGH )
-							{
-								//short pulse, this is a 1
-								mRomDetected |= U64( 0x1 ) << ( ( mRomBitsRecieved - 2 ) / 3 );
-							}
-							else
-							{
-								//long pulse, this is a 0
-							}
-						}
-						mRomBitsRecieved += 1;
-
-
-						if( mRomBitsRecieved == 24 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, FamilyCode, mRomDetected );
-
-						if( mRomBitsRecieved == 168 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, Rom, ( ( mRomDetected >> 8 ) & 0xFFFFFFFFFFFFull ) );
-
-						if( mRomBitsRecieved == 192 )
-						{
-							//Bubble the ROM CRC.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							RecordFrame( mByteStartSample, mRisingEdgeSample, CRC, ( mRomDetected >> 56 ) );
-							//Move to the next state
-							mCurrentState = RomFinishedState;
-						}
-					}
-					break;
-				case MatchRom:
-					{
-						//expecting 64 bits of rom address, nothing more.
-						//mRomDetected
-						if( mRomBitsRecieved == 8 )
-						{
-							//Bubble the ROM Family Code.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, FamilyCode, mRomDetected );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 56 )
-						{
-							//Bubble the ROM Data bits.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							//RecordFrame( mByteStartSample, mPreviousRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-							mByteStartSample = mFallingEdgeSample;
-						}
-						if( mRomBitsRecieved == 0 )
-						{
-							//Tag start of Family Code.
-							mByteStartSample = mFallingEdgeSample;
-						}
-
-						U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-						if( force_overdrive || mOverdrive )
-							sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
-						mOneWire->Advance( U32( sample_location_offset ) );
-						
-						if( mOneWire->GetBitState() == BIT_HIGH )
-						{
-							//short pulse, this is a 1
-							mRomDetected |= U64(0x1) << mRomBitsRecieved;
-						}
-						else
-						{
-							//long pulse, this is a 0
-						}
-						mRomBitsRecieved += 1;
-
-						if( mRomBitsRecieved == 8 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, FamilyCode, mRomDetected );
-
-						if( mRomBitsRecieved == 56 )
-							RecordFrame( mByteStartSample, mRisingEdgeSample, Rom, ((mRomDetected >> 8) & 0xFFFFFFFFFFFFull) );
-
-						if( mRomBitsRecieved == 64 )
-						{
-							//Bubble the ROM CRC.
-							//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							RecordFrame( mByteStartSample, mRisingEdgeSample, CRC, (mRomDetected >> 56) );
-							//Move to the next state
-							mCurrentState = RomFinishedState;
-
-						}
-					}
-					break;
-				case OverdriveSkipRom:
-					{
-						mCurrentState = RomFinishedState;
-						mOverdrive = true;
-						//we cannot through away our current transision!
-						mBlockPulseAdvance = true;
-					}
-					break;
-				case OverdriveMatchRom:
-					{
-						mOverdrive = true;
-						//expecting 64 bits of rom address.
-						mCurrentRomCommand = MatchRom;
-						//we cannot through away our current transision!
-						mBlockPulseAdvance = true;
-						
-					}
-					break;
-				}
-
-			}
-			break;
-		case RomFinishedState:
-			{			
-				if( mDataBitsRecieved == 0 )
-				{
-					mDataDetected = 0;
-					//Tag start of Family Code.
-					mByteStartSample = mFallingEdgeSample;
-				}
-
-				U64 sample_location_offset = UsToSamples( SPEC_SAMPLE_POINT );
-				if( force_overdrive || mOverdrive )
-					sample_location_offset = UsToSamples( SPEC_OVD_SAMPLE_POINT );
-				mOneWire->Advance( U32( sample_location_offset ) );
-				
-				if( mOneWire->GetBitState() == BIT_HIGH )
-				{
-					//short pulse, this is a 1
-					mDataDetected |= U64(0x1) << mDataBitsRecieved;
-				}
-				else
-				{
-					//long pulse, this is a 0
-				}
-				mDataBitsRecieved += 1;
-
-				if( mDataBitsRecieved == 8 )
-				{
-					//Bubble the ROM Family Code.
-					//TODO:  RecordBubble( one_wire_bubbles, mByteStartSample, mRisingEdgeSample, Byte, mDataDetected );
-					RecordFrame( mByteStartSample, mRisingEdgeSample, Byte, mDataDetected );
-					mDataBitsRecieved = 0;
-				}
-
-			}
-			break;
 		}
+		
 
 
 		ReportProgress( mOneWire->GetSampleNumber() );
@@ -739,7 +399,7 @@ U32 OneWireAnalyzer::GetMinimumSampleRateHz()
 	return 2000000;
 }
 
-const char gAnalyzerName[] = "1-Wire";  //your analyzer must have a unique name
+const char gAnalyzerName[] = "1-Wire_mod";  //your analyzer must have a unique name
 
 const char* OneWireAnalyzer::GetAnalyzerName() const
 {
